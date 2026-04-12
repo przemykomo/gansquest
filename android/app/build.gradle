@@ -1,0 +1,117 @@
+plugins {
+    id 'com.android.application'
+    id 'org.mozilla.rust-android-gradle.rust-android'
+}
+
+android {
+    namespace = "przemyk.gansquest"
+
+    compileSdk 33
+    packagingOptions {
+        jniLibs {
+            keepDebugSymbols += ["**/*.so"]
+        }
+    }
+    defaultConfig {
+        applicationId 'przemyk.gansquest'
+        minSdk 21
+        targetSdk 33
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    buildFeatures {
+        prefab true
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs = ["../../assets"]
+            jniLibs.srcDirs += ["$buildDir/generated/jniLibs"]
+        }
+    }
+}
+
+// Clanker code, proceed with caution:
+android.applicationVariants.all { variant ->
+
+    def taskName = "extractSoFor${variant.name.capitalize()}"
+    def outputDir = file("$buildDir/generated/jniLibs")
+    // def outputDir = file("$buildDir/generated/jniLibs/${variant.name}")
+
+    tasks.register(taskName, Copy) {
+        from {
+            variant.runtimeConfiguration
+                .filter { it.name.endsWith(".aar") }
+                .collect { zipTree(it) }
+        }
+
+        include "**/*.so"
+
+        eachFile { fileCopyDetails ->
+            def path = fileCopyDetails.path
+            def abi = ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].find { path.contains(it) }
+            if (abi != null) {
+                fileCopyDetails.path = "${abi}/${fileCopyDetails.name}"
+            } else {
+                fileCopyDetails.exclude()
+            }
+        }
+
+        includeEmptyDirs = false
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        into outputDir
+    }
+
+    // Make sure extraction runs before build
+    variant.preBuildProvider.configure {
+        dependsOn(tasks.named(taskName))
+    }
+}
+
+// https://github.com/mozilla/rust-android-gradle
+cargo {
+    module = "../../"
+    libname = "gansquest"
+    targets = ["arm", "arm64", "x86"]
+
+    features {
+        defaultAnd("android")
+    }
+
+    // https://github.com/mozilla/rust-android-gradle/issues/38#issuecomment-692683498
+    // There doesn't seem to be a simpler way to get the current buildType than to check the task names,
+    // see https://stackoverflow.com/a/53261807/1005419.
+    // profile = gradle.startParameter.taskNames.any{it.toLowerCase().contains("debug")} ? "debug" : "release"
+    // profile = "debug"
+    // Okay I give up, rust-android-gradle keeps running cargo --release no matter what I do, it's random
+    // I might later just remove this plugin and run shell commands myself or something...
+}
+
+dependencies {
+    implementation files('libs/SDL3-3.4.4.aar')
+    implementation files('libs/SDL3_image-3.4.2.aar')
+    implementation 'androidx.appcompat:appcompat:1.5.1'
+}
+
+afterEvaluate {
+    // The `cargoBuild` task isn't available until after evaluation.
+    android.applicationVariants.all { variant ->
+        def productFlavor = ""
+        variant.productFlavors.each {
+            productFlavor += "${it.name.capitalize()}"
+        }
+        def buildType = "${variant.buildType.name.capitalize()}"
+        tasks["generate${productFlavor}${buildType}Assets"].dependsOn(tasks["cargoBuild"])
+    }
+}

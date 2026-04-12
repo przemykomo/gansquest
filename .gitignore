@@ -1,0 +1,6 @@
+/target
+android/.gradle
+android/local.properties
+android/app/build
+android/app/libs
+.cxx

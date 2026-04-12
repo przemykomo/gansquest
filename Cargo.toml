@@ -1,0 +1,13 @@
+[package]
+name = "gansquest"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gansui = { path = "../gansui" }
+
+[lib]
+crate-type = ["lib", "dylib"]
+
+[features]
+android = []
