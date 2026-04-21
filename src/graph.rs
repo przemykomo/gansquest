@@ -4,8 +4,8 @@ use std::rc::Rc;
 
 use gansui::App;
 use gansui::draw::draw_tiled;
+use gansui::element::Length;
 use gansui::element::{Axis, Element};
-use gansui::element::{Length, Margin};
 use gansui::indextree::NodeId;
 use gansui::is_in;
 use gansui::sdl3::event::Event;
@@ -29,8 +29,34 @@ pub struct QuestNode {
     y: f32,
     prerequisites: Vec<usize>,
     state: QuestState,
-    pub title: &'static str,
-    pub desc: &'static str,
+    pub title_split: usize,
+    // pub title: &'a str,
+    // pub desc: &'a str,
+    pub content: String,
+}
+
+impl QuestNode {
+    pub fn new(
+        x: f32,
+        y: f32,
+        prerequisites: Vec<usize>,
+        state: QuestState,
+        content: String,
+    ) -> QuestNode {
+        QuestNode {
+            x,
+            y,
+            prerequisites,
+            state,
+            title_split: content.find('\n').unwrap_or(content.len()),
+            content,
+        }
+    }
+
+    pub fn set_content(&mut self, content: String) {
+        self.title_split = content.find('\n').unwrap_or(content.len());
+        self.content = content;
+    }
 }
 
 pub enum QuestState {
@@ -39,79 +65,78 @@ pub enum QuestState {
     Done,
 }
 
-pub fn load_graph() -> Rc<RefCell<HashMap<usize, QuestNode>>> {
+pub fn load_graph<'a>() -> Rc<RefCell<HashMap<usize, QuestNode>>> {
     let mut nodes: HashMap<usize, QuestNode> = HashMap::new();
     nodes.insert(
         0,
-        QuestNode {
-            x: 0.0,
-            y: -50.0,
-            prerequisites: vec![],
-            state: QuestState::Done,
-            title: "Node 0 title",
-            desc: "Node 0 desc",
-        },
+        QuestNode::new(
+            0.0,
+            -50.0,
+            vec![],
+            QuestState::Done,
+            "Node 0\ntest description!".to_owned(),
+        ),
     );
 
-    nodes.insert(
-        1,
-        QuestNode {
-            x: 0.0,
-            y: 50.0,
-            prerequisites: vec![0],
-            state: QuestState::Done,
-            title: "Node 1 title",
-            desc: "Node 1 desc",
-        },
-    );
-
-    nodes.insert(
-        2,
-        QuestNode {
-            x: 50.0,
-            y: 0.0,
-            prerequisites: vec![0],
-            state: QuestState::Available,
-            title: "Node 2 title",
-            desc: "Node 2 desc",
-        },
-    );
-
-    nodes.insert(
-        3,
-        QuestNode {
-            x: 100.0,
-            y: 0.0,
-            prerequisites: vec![1, 2],
-            state: QuestState::Unavailable,
-            title: "Node 3 title",
-            desc: "Node 3 desc",
-        },
-    );
-
-    nodes.insert(
-        4,
-        QuestNode {
-            x: 150.0,
-            y: 0.0,
-            prerequisites: vec![3],
-            state: QuestState::Unavailable,
-            title: "Node 4 title",
-            desc: "Node 4 desc",
-        },
-    );
-
-    nodes.insert(
-        5,
-        QuestNode {
-            x: 150.0,
-            y: 150.0,
-            prerequisites: vec![],
-            state: QuestState::Available,
-            title: "Node 5 title",
-            desc: "Node 5 desc",
-        },
-    );
+    // nodes.insert(
+    //     1,
+    //     QuestNode {
+    //         x: 0.0,
+    //         y: 50.0,
+    //         prerequisites: vec![0],
+    //         state: QuestState::Done,
+    //         // title: "Node 1 title",
+    //         desc: "Node 1\ntest description".to_owned(),
+    //     },
+    // );
+    //
+    // nodes.insert(
+    //     2,
+    //     QuestNode {
+    //         x: 50.0,
+    //         y: 0.0,
+    //         prerequisites: vec![0],
+    //         state: QuestState::Available,
+    //         // title: "Node 2 title",
+    //         desc: "Node 2\ntest description".to_owned(),
+    //     },
+    // );
+    //
+    // nodes.insert(
+    //     3,
+    //     QuestNode {
+    //         x: 100.0,
+    //         y: 0.0,
+    //         prerequisites: vec![1, 2],
+    //         state: QuestState::Unavailable,
+    //         // title: "Node 3 title",
+    //         desc: "Node 3\ntest description".to_owned(),
+    //     },
+    // );
+    //
+    // nodes.insert(
+    //     4,
+    //     QuestNode {
+    //         x: 150.0,
+    //         y: 0.0,
+    //         prerequisites: vec![3],
+    //         state: QuestState::Unavailable,
+    //         // title: "Node 4 title",
+    //         desc: "Node 4\ntest description".to_owned(),
+    //     },
+    // );
+    //
+    // nodes.insert(
+    //     5,
+    //     QuestNode {
+    //         x: 150.0,
+    //         y: 150.0,
+    //         prerequisites: vec![],
+    //         state: QuestState::Available,
+    //         // title: "Node 5 title",
+    //         desc: "Node 5\ntest description".to_owned(),
+    //     },
+    // );
 
     Rc::new(RefCell::new(nodes))
 }
@@ -124,6 +149,7 @@ pub fn generate_graph<'a>(
 ) -> Element<'a> {
     let zoom: Rc<RefCell<f32>> = Rc::new(RefCell::new(1.0));
     let pos: Rc<RefCell<FPoint>> = Rc::new(RefCell::new(FPoint::new(0.0, 0.0)));
+    let drag_started_on_graph = Rc::new(RefCell::new(false));
 
     let graph = Element::new()
         .with_width(Length::Grow {
@@ -134,30 +160,34 @@ pub fn generate_graph<'a>(
             min: 0.0,
             max: f32::MAX,
         })
-        .with_margin(Margin::from(20.0))
         .with_background_color(BLUE_GRAY)
         .with_text_color(Color::WHITE)
         .with_layout_axis(Axis::Horizontal)
         .with_spacing(10.0)
         .on_mouse_down({
             let selected = selected.clone();
-            // let nodes = nodes.clone();
-            move |app, _element, button, clicks, _mouse_x, _mouse_y, _event| {
+            let drag_started_on_graph = drag_started_on_graph.clone();
+            move |app, element, button, clicks, mouse_x, mouse_y, _event| {
                 if button == Left {
+                    if is_in(mouse_x, mouse_y, &app.tree[element].get().aabb) {
+                        *drag_started_on_graph.borrow_mut() = true;
+                    }
                     let selected = selected.borrow_mut();
                     if let Some(_) = &*selected
                         && clicks == 2
                     {
-                        // let mut overlay = update_overlay.borrow_mut();
-                        // let nodes = nodes.borrow();
-                        // let node = nodes.get(id).unwrap();
-                        // overlay.on = true;
-                        // overlay.title = node.title;
-                        // overlay.desc = node.desc;
                         drop(selected);
                         update_overlay(app);
                         app.set_event_handled();
                     }
+                }
+            }
+        })
+        .on_mouse_up({
+            let drag_started_on_graph = drag_started_on_graph.clone();
+            move |_app, _element, button, _clicks, _x, _y, _event| {
+                if button == Left {
+                    *drag_started_on_graph.borrow_mut() = false;
                 }
             }
         })
@@ -166,6 +196,7 @@ pub fn generate_graph<'a>(
             let zoom = zoom.clone();
             let nodes = nodes.clone();
             let selected = selected.clone();
+            let drag_started_on_graph = drag_started_on_graph.clone();
             move |app,
                   element,
                   mouse_x,
@@ -198,19 +229,14 @@ pub fn generate_graph<'a>(
                         }
                     }
 
-                    if mousestate.is_mouse_button_pressed(Left) {
-                        // let mut pos = pos.borrow_mut();
-                        // let zoom = zoom.borrow();
-                        // let selected = selected.borrow();
+                    // if mousestate.is_mouse_button_pressed(Left) {
+                    if *drag_started_on_graph.borrow() {
                         if let Some(selected) = &*selected {
-                            // let mut nodes = nodes.borrow_mut();
                             let node = nodes.get_mut(selected).unwrap();
                             let mouse_x = mouse_x - element.aabb.x - element.aabb.w / 2.0 - pos.x;
                             let mouse_y = mouse_y - element.aabb.y - element.aabb.h / 2.0 - pos.y;
                             node.x = mouse_x / *zoom - NODE_LENGTH / 2.0;
                             node.y = mouse_y / *zoom - NODE_LENGTH / 2.0;
-                            // node.x += diff_x / *zoom;
-                            // node.y += diff_y / *zoom;
                             if !app
                                 .event_pump
                                 .keyboard_state()
