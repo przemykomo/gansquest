@@ -41,6 +41,8 @@ pub mod graph;
 use gansui::text::text_edit_element;
 use graph::generate_graph;
 
+use crate::graph::QuestNode;
+use crate::graph::QuestWorld;
 use crate::graph::load_graph;
 
 const ACCEPT_TXT: FRect = FRect {
@@ -171,8 +173,8 @@ fn tiled_bg<'a>(atlas_txt: Rc<RefCell<sdl3::render::Texture>>) -> Element<'a> {
 fn done_editing_button(
     tree: &mut Arena<Element<'_>>,
     description_box: NodeId,
-    nodes: Rc<RefCell<std::collections::HashMap<usize, graph::QuestNode>>>,
-    selected: Rc<RefCell<Option<usize>>>,
+    world: Rc<RefCell<QuestWorld>>,
+    selected: Rc<RefCell<Option<u32>>>,
     atlas_txt: Rc<RefCell<sdl3::render::Texture>>,
     edit_button: NodeId,
     editor_rc: Rc<RefCell<PlainEditor<Color>>>,
@@ -187,9 +189,9 @@ fn done_editing_button(
         move |app, _accept_button| {
             description_box.remove_children(&mut app.tree);
 
-            let mut nodes = nodes.borrow_mut();
+            let mut world = world.borrow_mut();
             let selected = selected.borrow();
-            let node = nodes.get_mut(&selected.unwrap()).unwrap();
+            let node = world.nodes.get_mut(&selected.unwrap()).unwrap();
             if accept {
                 node.set_content(editor_rc.borrow().raw_text().to_owned());
             }
@@ -224,7 +226,11 @@ fn done_editing_button(
 
             text_description.append_value(
                 my_text_element(
-                    &node.content[node.title_split + 1..],
+                    if node.title_split == node.content.len() {
+                        ""
+                    } else {
+                        &node.content[node.title_split + 1..]
+                    },
                     scale_ctx.clone(),
                     font_ctx.clone(),
                     layout_ctx.clone(),
@@ -270,6 +276,12 @@ fn done_editing_button(
 }
 
 pub fn run() -> Result<(), AppError> {
+    let mut save_directory = if !cfg!(debug_assertions) || cfg!(feature = "android") {
+        sdl3::filesystem::get_pref_path("przemyk", "gansquest").unwrap()
+    } else {
+        "./save/".into()
+    };
+
     let font_ctx = Rc::new(RefCell::new(FontContext::new()));
     let layout_ctx = Rc::new(RefCell::new(LayoutContext::<Color>::new()));
     let scale_ctx = Rc::new(RefCell::new(ScaleContext::new()));
@@ -282,9 +294,10 @@ pub fn run() -> Result<(), AppError> {
 
     let atlas_txt = Rc::new(RefCell::new(atlas_txt));
 
-    let selected: Rc<RefCell<Option<usize>>> = Rc::new(RefCell::new(None));
+    let selected: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
 
-    let nodes = load_graph();
+    save_directory.push("myworld/");
+    let world = load_graph(save_directory);
     let mut tree = Arena::new();
 
     let description_box = tree.new_node(
@@ -360,7 +373,7 @@ pub fn run() -> Result<(), AppError> {
     let edit_button = tree.new_node(edit_button(
         description_box,
         edit_button_state.clone(),
-        nodes.clone(),
+        world.clone(),
         selected.clone(),
         atlas_txt.clone(),
         scale_ctx.clone(),
@@ -371,7 +384,7 @@ pub fn run() -> Result<(), AppError> {
 
     let update_overlay = {
         let atlas_txt = atlas_txt.clone();
-        let nodes = nodes.clone();
+        let world = world.clone();
         let selected = selected.clone();
         let scale_ctx = scale_ctx.clone();
         let font_ctx = font_ctx.clone();
@@ -382,9 +395,9 @@ pub fn run() -> Result<(), AppError> {
 
             edit_button.detach(&mut app.tree);
             description_box.remove_children(&mut app.tree);
-            let nodes = nodes.borrow();
+            let world = world.borrow();
             let selected = selected.borrow();
-            let node = nodes.get(&selected.unwrap()).unwrap();
+            let node = world.nodes.get(&selected.unwrap()).unwrap();
 
             let text_title = app.tree.new_node(
                 tiled_bg(atlas_txt.clone())
@@ -414,7 +427,11 @@ pub fn run() -> Result<(), AppError> {
                     }));
             text_description.append_value(
                 my_text_element(
-                    &node.content[node.title_split + 1..],
+                    if node.title_split == node.content.len() {
+                        ""
+                    } else {
+                        &node.content[node.title_split + 1..]
+                    },
                     scale_ctx.clone(),
                     font_ctx.clone(),
                     layout_ctx.clone(),
@@ -432,7 +449,7 @@ pub fn run() -> Result<(), AppError> {
     let graph = tree.new_node(generate_graph(
         atlas_txt.clone(),
         update_overlay,
-        nodes.clone(),
+        world.clone(),
         selected.clone(),
     ));
     let tooltip_text = Rc::new(RefCell::new(build_text_layout(
@@ -462,7 +479,7 @@ pub fn run() -> Result<(), AppError> {
             .set_draw({
                 let tooltip_text = tooltip_text.clone();
                 let selected = selected.clone();
-                let nodes = nodes.clone();
+                let world = world.clone();
                 let font_ctx = font_ctx.clone();
                 let layout_ctx = layout_ctx.clone();
                 let cached_width = cached_width.clone();
@@ -486,8 +503,8 @@ pub fn run() -> Result<(), AppError> {
                             tooltip_text_node.detach(&mut app.tree);
                             return;
                         };
-                        let nodes = nodes.borrow();
-                        let node = nodes.get(&selected).unwrap();
+                        let world = world.borrow();
+                        let node = world.nodes.get(&selected).unwrap();
                         let text = &node.content[..node.title_split];
                         let layout = build_text_layout(text, font_ctx.clone(), layout_ctx.clone());
                         let width = layout.calculate_content_widths();
@@ -624,8 +641,18 @@ pub fn run() -> Result<(), AppError> {
 
     let button_state: Rc<RefCell<ButtonState>> = Default::default();
     sidebar.append_value(
-        button(button_state.clone(), |app, element| {
-            println!("ADD NODE!");
+        button(button_state.clone(), {
+            let world = world.clone();
+            move |app, _element| {
+                let mut world = world.borrow_mut();
+                world.add(QuestNode::new(
+                    0.0, //TODO
+                    0.0,
+                    vec![],
+                    graph::QuestState::Available,
+                    "New Quest".to_owned(),
+                ));
+            }
         })
         .with_width(Length::Fixed(64.0))
         .with_height(Length::Fixed(64.0))
@@ -641,8 +668,8 @@ pub fn run() -> Result<(), AppError> {
 fn edit_button<'a>(
     description_box: NodeId,
     edit_button_state: Rc<RefCell<ButtonState>>,
-    nodes: Rc<RefCell<std::collections::HashMap<usize, graph::QuestNode>>>,
-    selected: Rc<RefCell<Option<usize>>>,
+    world: Rc<RefCell<QuestWorld>>,
+    selected: Rc<RefCell<Option<u32>>>,
     atlas_txt: Rc<RefCell<sdl3::render::Texture>>,
     scale_ctx: Rc<RefCell<ScaleContext>>,
     font_ctx: Rc<RefCell<FontContext>>,
@@ -655,9 +682,9 @@ fn edit_button<'a>(
             edit_button.detach(&mut app.tree);
             description_box.remove_children(&mut app.tree);
 
-            let n = nodes.borrow();
+            let w = world.borrow();
             let s = selected.borrow();
-            let node = n.get(&s.unwrap()).unwrap();
+            let node = w.nodes.get(&s.unwrap()).unwrap();
 
             let edit_text_description = app.tree.new_node(
                 tiled_bg(atlas_txt.clone())
@@ -688,7 +715,7 @@ fn edit_button<'a>(
             let accept_button = done_editing_button(
                 &mut app.tree,
                 description_box,
-                nodes.clone(),
+                world.clone(),
                 selected.clone(),
                 atlas_txt.clone(),
                 edit_button,
@@ -702,7 +729,7 @@ fn edit_button<'a>(
             let discard_button = done_editing_button(
                 &mut app.tree,
                 description_box,
-                nodes.clone(),
+                world.clone(),
                 selected.clone(),
                 atlas_txt.clone(),
                 edit_button,
@@ -714,7 +741,7 @@ fn edit_button<'a>(
             );
 
             let delete_button = app.tree.new_node({
-                let nodes = nodes.clone();
+                let world = world.clone();
                 let selected = selected.clone();
                 let button_state: Rc<RefCell<ButtonState>> = Default::default();
                 button(button_state.clone(), move |app, _element| {
@@ -747,8 +774,8 @@ fn edit_button<'a>(
                     if b.button_id == 0 {
                         let mut selected = selected.borrow_mut();
                         if let Some(s) = **&selected {
-                            let mut nodes = nodes.borrow_mut();
-                            nodes.remove(&s);
+                            let mut world = world.borrow_mut();
+                            world.nodes.remove(&s);
                             app.set_event_handled();
                             app.tree[overlay].get_mut().layout = Layout::None;
                             *selected = None;

@@ -1,6 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufReader, ErrorKind, Read, Write};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::usize;
 
 use gansui::App;
 use gansui::draw::draw_tiled;
@@ -27,7 +31,7 @@ const NODE_LENGTH: f32 = 20.0;
 pub struct QuestNode {
     x: f32,
     y: f32,
-    prerequisites: Vec<usize>,
+    prerequisites: Vec<u32>,
     state: QuestState,
     pub title_split: usize,
     // pub title: &'a str,
@@ -39,7 +43,7 @@ impl QuestNode {
     pub fn new(
         x: f32,
         y: f32,
-        prerequisites: Vec<usize>,
+        prerequisites: Vec<u32>,
         state: QuestState,
         content: String,
     ) -> QuestNode {
@@ -65,19 +69,83 @@ pub enum QuestState {
     Done,
 }
 
-pub fn load_graph<'a>() -> Rc<RefCell<HashMap<usize, QuestNode>>> {
-    let mut nodes: HashMap<usize, QuestNode> = HashMap::new();
-    nodes.insert(
-        0,
-        QuestNode::new(
-            0.0,
-            -50.0,
-            vec![],
-            QuestState::Done,
-            "Node 0\ntest description!".to_owned(),
-        ),
-    );
+pub struct QuestWorld {
+    pub nodes: HashMap<u32, QuestNode>,
+    counter: u32,
+    path: PathBuf,
+}
 
+impl QuestWorld {
+    const VERSION: &[u8] = &[0];
+    const MAGIC: &[u8] = b"GANSQUESTW";
+
+    pub fn add(&mut self, node: QuestNode) {
+        self.counter += 1;
+        self.nodes.insert(self.counter, node);
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let mut file = self.path.clone();
+        file.push("world");
+        std::fs::create_dir_all(&self.path).unwrap();
+        let mut file = File::create(file).unwrap();
+        file.write(Self::MAGIC)?;
+        file.write(Self::VERSION)?;
+        file.write(&self.counter.to_le_bytes())?;
+
+        // for (key, node) in &self.nodes {
+        //     let mut file = self.path.clone();
+        //     file.push(format!("{key}"));
+        //     let mut file = File::create(file).unwrap();
+        //     write!(file, "aboba").unwrap();
+        // }
+
+        Ok(())
+    }
+
+    pub fn load(&mut self) -> std::io::Result<()> {
+        let mut file = self.path.clone();
+        file.push("world");
+        let mut file = BufReader::new(File::open(file)?);
+
+        let mut magic = [0; Self::MAGIC.len()];
+        file.read_exact(&mut magic)?;
+        if magic != Self::MAGIC {
+            return Err(ErrorKind::Other.into());
+        }
+
+        let mut version = [0; 1];
+        file.read_exact(&mut version)?;
+        if version[0] != Self::VERSION[0] {
+            return Err(ErrorKind::Other.into());
+        }
+
+        let mut counter = [0; 4];
+        file.read_exact(&mut counter)?;
+        self.counter = u32::from_le_bytes(counter);
+
+        Ok(())
+    }
+}
+
+pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
+    let mut world = QuestWorld {
+        nodes: HashMap::new(),
+        counter: 0,
+        path,
+    };
+
+    // world.add(QuestNode::new(
+    //     0.0,
+    //     -50.0,
+    //     vec![],
+    //     QuestState::Done,
+    //     "Node 0\ntest description!".to_owned(),
+    // ));
+
+    // world.save().unwrap();
+    world.load().unwrap();
+    dbg!(world.counter);
     // nodes.insert(
     //     1,
     //     QuestNode {
@@ -138,14 +206,14 @@ pub fn load_graph<'a>() -> Rc<RefCell<HashMap<usize, QuestNode>>> {
     //     },
     // );
 
-    Rc::new(RefCell::new(nodes))
+    Rc::new(RefCell::new(world))
 }
 
 pub fn generate_graph<'a>(
     atlas_txt: Rc<RefCell<sdl3::render::Texture>>,
     mut update_overlay: impl FnMut(&mut App) + 'a,
-    nodes: Rc<RefCell<HashMap<usize, QuestNode>>>,
-    selected: Rc<RefCell<Option<usize>>>,
+    world: Rc<RefCell<QuestWorld>>,
+    selected: Rc<RefCell<Option<u32>>>,
 ) -> Element<'a> {
     let zoom: Rc<RefCell<f32>> = Rc::new(RefCell::new(1.0));
     let pos: Rc<RefCell<FPoint>> = Rc::new(RefCell::new(FPoint::new(0.0, 0.0)));
@@ -194,7 +262,7 @@ pub fn generate_graph<'a>(
         .on_mouse_motion({
             let pos = pos.clone();
             let zoom = zoom.clone();
-            let nodes = nodes.clone();
+            let world = world.clone();
             let selected = selected.clone();
             let drag_started_on_graph = drag_started_on_graph.clone();
             move |app,
@@ -208,7 +276,7 @@ pub fn generate_graph<'a>(
                   _update_selection| {
                 let element = app.tree[element].get();
                 if is_in(mouse_x, mouse_y, &element.aabb) {
-                    let mut nodes = nodes.borrow_mut();
+                    let mut world = world.borrow_mut();
                     let zoom = zoom.borrow();
                     let mut pos = pos.borrow_mut();
                     let x = element.aabb.x + element.aabb.w / 2.0 + pos.x;
@@ -217,7 +285,7 @@ pub fn generate_graph<'a>(
                     let mut selected = selected.borrow_mut();
                     if !mousestate.is_mouse_button_pressed(Left) {
                         *selected = None;
-                        for (id, node) in nodes.iter() {
+                        for (id, node) in world.nodes.iter() {
                             let node_aabb =
                                 FRect::new(x + node.x * *zoom, y + node.y * *zoom, length, length);
 
@@ -232,7 +300,7 @@ pub fn generate_graph<'a>(
                     // if mousestate.is_mouse_button_pressed(Left) {
                     if *drag_started_on_graph.borrow() {
                         if let Some(selected) = &*selected {
-                            let node = nodes.get_mut(selected).unwrap();
+                            let node = world.nodes.get_mut(selected).unwrap();
                             let mouse_x = mouse_x - element.aabb.x - element.aabb.w / 2.0 - pos.x;
                             let mouse_y = mouse_y - element.aabb.y - element.aabb.h / 2.0 - pos.y;
                             node.x = mouse_x / *zoom - NODE_LENGTH / 2.0;
@@ -330,8 +398,8 @@ pub fn generate_graph<'a>(
             let y = element.aabb.y + element.aabb.h / 2.0 + pos.y;
             let length = NODE_LENGTH * *zoom;
 
-            let nodes = nodes.borrow();
-            for (id, node) in nodes.iter() {
+            let world = world.borrow();
+            for (id, node) in world.nodes.iter() {
                 let node_x = x + node.x * *zoom;
                 let node_y = y + node.y * *zoom;
                 let (line_color, anim) = if let Some(selected) = *selected.borrow()
@@ -349,7 +417,7 @@ pub fn generate_graph<'a>(
                     )
                 };
                 for pre_id in &node.prerequisites {
-                    if let Some(pre) = nodes.get(pre_id) {
+                    if let Some(pre) = world.nodes.get(pre_id) {
                         let (line_color, anim) = if let Some(selected) = *selected.borrow()
                             && *pre_id == selected
                         {
@@ -462,7 +530,7 @@ pub fn generate_graph<'a>(
                 }
             }
 
-            for node in nodes.values() {
+            for node in world.nodes.values() {
                 let (fill, border) = match node.state {
                     QuestState::Unavailable => (DARK_GRAY, LIGHT_GRAY),
                     QuestState::Available => (LIGHT_GRAY, Color::WHITE),
@@ -485,7 +553,7 @@ pub fn generate_graph<'a>(
             }
 
             if let Some(id) = &*selected.borrow() {
-                let node = nodes.get(id).unwrap();
+                let node = world.nodes.get(id).unwrap();
                 let node_aabb = FRect::new(x + node.x * *zoom, y + node.y * *zoom, length, length);
                 app.canvas.set_blend_mode(sdl3::render::BlendMode::Blend);
                 app.canvas.set_draw_color(WHITE_OVERLAY);
