@@ -2,7 +2,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gansui::App;
-use gansui::AppError;
 use gansui::button::ButtonState;
 use gansui::button::button;
 use gansui::draw::draw_nine_patch;
@@ -275,7 +274,7 @@ fn done_editing_button(
     tree.new_node(element)
 }
 
-pub fn run() -> Result<(), AppError> {
+pub fn run() -> anyhow::Result<()> {
     let mut save_directory = if !cfg!(debug_assertions) || cfg!(feature = "android") {
         sdl3::filesystem::get_pref_path("przemyk", "gansquest").unwrap()
     } else {
@@ -643,13 +642,14 @@ pub fn run() -> Result<(), AppError> {
     sidebar.append_value(
         button(button_state.clone(), {
             let world = world.clone();
-            move |app, _element| {
+            move |_app, _element| {
                 let mut world = world.borrow_mut();
                 world.add(QuestNode::new(
                     0.0, //TODO
                     0.0,
                     vec![],
-                    graph::QuestState::Available,
+                    false,
+                    // graph::QuestState::Available,
                     "New Quest".to_owned(),
                 ));
             }
@@ -662,7 +662,9 @@ pub fn run() -> Result<(), AppError> {
     main_layer.append(sidebar, &mut tree);
     layers.append(main_layer, &mut tree);
 
-    app.run(layers, tree)
+    app.run(layers, tree)?;
+    world.borrow().save()?;
+    Ok(())
 }
 
 fn edit_button<'a>(

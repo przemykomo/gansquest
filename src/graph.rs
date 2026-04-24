@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, ErrorKind, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::usize;
 
+use anyhow::anyhow;
 use gansui::App;
 use gansui::draw::draw_tiled;
 use gansui::element::Length;
@@ -32,6 +32,7 @@ pub struct QuestNode {
     x: f32,
     y: f32,
     prerequisites: Vec<u32>,
+    done: bool,
     state: QuestState,
     pub title_split: usize,
     // pub title: &'a str,
@@ -44,14 +45,20 @@ impl QuestNode {
         x: f32,
         y: f32,
         prerequisites: Vec<u32>,
-        state: QuestState,
+        // state: QuestState,
+        done: bool,
         content: String,
     ) -> QuestNode {
         QuestNode {
             x,
             y,
             prerequisites,
-            state,
+            done,
+            state: if done {
+                QuestState::Done
+            } else {
+                QuestState::Unavailable
+            },
             title_split: content.find('\n').unwrap_or(content.len()),
             content,
         }
@@ -77,7 +84,8 @@ pub struct QuestWorld {
 
 impl QuestWorld {
     const VERSION: &[u8] = &[0];
-    const MAGIC: &[u8] = b"GANSQUESTW";
+    const MAGIC_WORLD: &[u8] = b"GANSQUESTW";
+    const MAGIC_QUEST: &[u8] = b"GANSQUESTQ";
 
     pub fn add(&mut self, node: QuestNode) {
         self.counter += 1;
@@ -89,40 +97,114 @@ impl QuestWorld {
         file.push("world");
         std::fs::create_dir_all(&self.path).unwrap();
         let mut file = File::create(file).unwrap();
-        file.write(Self::MAGIC)?;
-        file.write(Self::VERSION)?;
-        file.write(&self.counter.to_le_bytes())?;
+        file.write_all(Self::MAGIC_WORLD)?;
+        file.write_all(Self::VERSION)?;
+        file.write_all(&self.counter.to_le_bytes())?;
 
-        // for (key, node) in &self.nodes {
-        //     let mut file = self.path.clone();
-        //     file.push(format!("{key}"));
-        //     let mut file = File::create(file).unwrap();
-        //     write!(file, "aboba").unwrap();
-        // }
+        for (key, node) in &self.nodes {
+            let mut file = self.path.clone();
+            file.push(format!("{key}"));
+            let mut file = File::create(file).unwrap();
+            file.write_all(Self::MAGIC_QUEST)?;
+            file.write_all(Self::VERSION)?;
+            file.write_all(&node.x.to_le_bytes())?;
+            file.write_all(&node.y.to_le_bytes())?;
+            file.write_all(&[node.done as u8])?;
+            file.write_all(&(node.prerequisites.len() as u32).to_le_bytes())?;
+            for pre in &node.prerequisites {
+                file.write_all(&pre.to_le_bytes())?;
+            }
+            file.write_all(node.content.as_bytes())?;
+        }
 
         Ok(())
     }
 
-    pub fn load(&mut self) -> std::io::Result<()> {
+    pub fn load(&mut self) -> anyhow::Result<()> {
         let mut file = self.path.clone();
         file.push("world");
-        let mut file = BufReader::new(File::open(file)?);
+        let Ok(file) = File::open(file) else {
+            return Ok(());
+        };
+        let mut file = BufReader::new(file);
 
-        let mut magic = [0; Self::MAGIC.len()];
+        let mut magic = [0; Self::MAGIC_WORLD.len()];
         file.read_exact(&mut magic)?;
-        if magic != Self::MAGIC {
-            return Err(ErrorKind::Other.into());
+        if magic != Self::MAGIC_WORLD {
+            return Err(anyhow!("Magic bytes don't match for the world file."));
         }
 
         let mut version = [0; 1];
         file.read_exact(&mut version)?;
         if version[0] != Self::VERSION[0] {
-            return Err(ErrorKind::Other.into());
+            return Err(anyhow!("Version doesn't match for the world file."));
         }
 
         let mut counter = [0; 4];
         file.read_exact(&mut counter)?;
         self.counter = u32::from_le_bytes(counter);
+
+        self.nodes.clear();
+        for entry in std::fs::read_dir(&self.path)? {
+            let path = entry?.path();
+            if path.is_file() {
+                let Some(id) = path.file_name() else {
+                    continue;
+                };
+                let Some(id) = id.to_str() else {
+                    continue;
+                };
+
+                let Ok(id) = u32::from_str_radix(id, 10) else {
+                    continue;
+                };
+
+                file = BufReader::new(File::open(path)?);
+                let mut magic = [0; Self::MAGIC_QUEST.len()];
+                file.read_exact(&mut magic)?;
+                if magic != Self::MAGIC_QUEST {
+                    continue;
+                }
+
+                file.read_exact(&mut version)?;
+                if version[0] != Self::VERSION[0] {
+                    continue;
+                }
+
+                let mut x = [0; 4];
+                file.read_exact(&mut x)?;
+                let mut y = [0; 4];
+                file.read_exact(&mut y)?;
+
+                let mut done = [0; 1];
+                file.read_exact(&mut done)?;
+
+                let mut length = [0; 4];
+                file.read_exact(&mut length)?;
+                let mut prerequisites: Vec<u32> =
+                    Vec::with_capacity(u32::from_le_bytes(length) as usize);
+                let mut p = [0; 4];
+                for _ in 0..u32::from_le_bytes(length) {
+                    file.read_exact(&mut p)?;
+                    prerequisites.push(u32::from_le_bytes(p));
+                }
+
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+
+                dbg!(&content);
+                self.nodes.insert(
+                    id,
+                    QuestNode::new(
+                        f32::from_le_bytes(x),
+                        f32::from_le_bytes(y),
+                        prerequisites,
+                        done[0] != 0,
+                        content,
+                    ),
+                );
+            }
+        }
 
         Ok(())
     }
@@ -139,11 +221,10 @@ pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
     //     0.0,
     //     -50.0,
     //     vec![],
-    //     QuestState::Done,
+    //     true,
     //     "Node 0\ntest description!".to_owned(),
     // ));
 
-    // world.save().unwrap();
     world.load().unwrap();
     dbg!(world.counter);
     // nodes.insert(

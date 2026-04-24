@@ -1,6 +1,5 @@
 use gansquest::run;
-use gansui::AppError;
 
-pub fn main() -> Result<(), AppError> {
+pub fn main() -> anyhow::Result<()> {
     run()
 }
