@@ -3,5 +3,7 @@ android/.gradle
 android/local.properties
 android/app/build
 android/app/libs
+android/.project
+android/.settings/
 .cxx
 save

@@ -9,9 +9,15 @@ gansui = {
     path = "../gansui",
     # features = ["debug_ui"]
 }
+jni = {
+    version = "0.22.4",
+    #optional = true
+}
 
 [lib]
 crate-type = ["lib", "dylib"]
 
 [features]
-android = []
+android = [
+#"dep:jni"
+]

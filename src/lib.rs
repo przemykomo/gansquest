@@ -1,5 +1,10 @@
 use std::cell::RefCell;
+use std::io::Write;
+use std::path::Path;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use gansui::App;
 use gansui::button::ButtonState;
@@ -24,7 +29,11 @@ use gansui::parley::OverflowWrap;
 use gansui::parley::PlainEditor;
 use gansui::parley::StyleProperty;
 use gansui::sdl3;
+use gansui::sdl3::dialog::DialogCallback;
+use gansui::sdl3::dialog::DialogError;
+use gansui::sdl3::dialog::DialogFileFilter;
 use gansui::sdl3::image::LoadTexture;
+use gansui::sdl3::iostream::IOStream;
 use gansui::sdl3::messagebox::ButtonData;
 use gansui::sdl3::messagebox::ClickedButton;
 use gansui::sdl3::messagebox::MessageBoxButtonFlag;
@@ -33,6 +42,7 @@ use gansui::sdl3::messagebox::show_message_box;
 use gansui::sdl3::mouse::MouseButton;
 use gansui::sdl3::pixels::Color;
 use gansui::sdl3::render::FRect;
+use gansui::sdl3::sys::mutex::SDL_Mutex;
 use gansui::swash::scale::ScaleContext;
 use gansui::text::rich_text_element;
 
@@ -79,18 +89,15 @@ const TRASH_TXT: FRect = FRect {
     h: 16.0,
 };
 
+const CHAIN_TXT: FRect = FRect {
+    x: 96.0,
+    y: 144.0,
+    w: 16.0,
+    h: 16.0,
+};
+
 const DARK_BLUE: Color = Color::RGBA(0, 0, 200, 255);
 const LIGHT_BLUE: Color = Color::RGB(0, 200, 200);
-// const BIT_LIGHT_BLUE: Color = Color::RGB(0, 100, 200);
-//
-// const DARK_GREEN: Color = Color::RGB(52, 103, 57);
-// const GREEN_BUTTON: Color = Color::RGB(121, 174, 111);
-// const LIGHT_GREEN: Color = Color::RGB(159, 203, 152);
-//
-// const DARK_RED: Color = Color::RGB(94, 0, 6);
-// const RED_BUTTON: Color = Color::RGB(155, 15, 6);
-// const LIGHT_RED: Color = Color::RGB(213, 62, 15);
-
 const GREEN: Color = Color::RGB(100, 220, 100);
 const BLUE_GRAY: Color = Color::RGB(74, 85, 103);
 const LIGHT_GRAY: Color = Color::RGB(132, 132, 132);
@@ -275,9 +282,19 @@ fn done_editing_button(
 }
 
 pub fn run() -> anyhow::Result<()> {
-    let mut save_directory = if !cfg!(debug_assertions) || cfg!(feature = "android") {
-        sdl3::filesystem::get_pref_path("przemyk", "gansquest").unwrap()
-    } else {
+    let mut save_directory = {
+        #[cfg(all(debug_assertions, not(feature = "android")))]
+        {
+            sdl3::filesystem::get_pref_path("przemyk", "gansquest").unwrap()
+        }
+
+        #[cfg(feature = "android")]
+        unsafe {
+            let buf = sdl3::sys::system::SDL_GetAndroidExternalStoragePath().into();
+            std::path::PathBuf::from(std::ffi::CStr::from_ptr(buf).to_str().unwrap())
+        }
+
+        #[cfg(not(any(debug_assertions, feature = "android")))]
         "./save/".into()
     };
 
@@ -286,6 +303,44 @@ pub fn run() -> anyhow::Result<()> {
     let scale_ctx = Rc::new(RefCell::new(ScaleContext::new()));
 
     let app = App::new(VERY_DARK_GRAY)?;
+
+    //    static SAVE_DIR: OnceLock<Result<Vec<PathBuf>, DialogError>> = OnceLock::new();
+    //    sdl3::dialog::show_save_file_dialog(
+    //        &[],
+    //        None::<&Path>,
+    //        //false,
+    //        app.canvas.window(),
+    //        Box::new(
+    //            |result: Result<Vec<PathBuf>, DialogError>, filter: Option<DialogFileFilter<'_>>| {
+    //                SAVE_DIR.get_or_init(|| result);
+    //            },
+    //        ),
+    //    )
+    //    .unwrap();
+    //
+    //    let res = &SAVE_DIR.wait().as_ref().unwrap();
+    //    save_directory = res[0].clone();
+    //    let mut file = IOStream::from_file(&save_directory, "w").unwrap();
+    //    write!(file, "aboba aboba!").unwrap();
+    //    file.flush().unwrap();
+    //
+    //    panic!("{:?}", save_directory.parent().unwrap());
+//    unsafe {
+//        // JNIEnv *env = Android_JNI_GetEnv();
+//        let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+//        let mut env = jni::EnvUnowned::from_raw(ptr as _);
+//        let _ = env.with_env(|env| -> Result<_, jni::errors::Error> {
+//            env.call_static_method(
+//                jni::jni_str!("przemyk/gansquest/MyActivity"),
+//                jni::jni_str!("pickDirectory"),
+//                jni::jni_sig!("()V"),
+//                &[],
+//            ).unwrap();
+//            Ok(())
+//        });
+//    }
+    //panic!("{:?}", save_directory);
+
     let mut atlas_txt = app
         .texture_creator
         .load_texture(format!("{ASSETS}/atlas.png"))?;
@@ -622,6 +677,7 @@ pub fn run() -> anyhow::Result<()> {
             min: 0.0,
             max: f32::MAX,
         })
+        .with_layout_axis(Axis::Horizontal)
         .align_vertical(Align::Center);
 
     #[cfg(not(feature = "android"))]
@@ -656,7 +712,19 @@ pub fn run() -> anyhow::Result<()> {
         })
         .with_width(Length::Fixed(64.0))
         .with_height(Length::Fixed(64.0))
-        .set_draw(button_draw(atlas_txt, button_state, PLUS_TXT)),
+        .set_draw(button_draw(atlas_txt.clone(), button_state, PLUS_TXT)),
+        &mut tree,
+    );
+
+    let button_state: Rc<RefCell<ButtonState>> = Default::default();
+    sidebar.append_value(
+        button(button_state.clone(), {
+            // let world = world.clone();
+            move |_app, _element| println!("Link dependencies")
+        })
+        .with_width(Length::Fixed(64.0))
+        .with_height(Length::Fixed(64.0))
+        .set_draw(button_draw(atlas_txt.clone(), button_state, CHAIN_TXT)),
         &mut tree,
     );
     main_layer.append(sidebar, &mut tree);
@@ -860,12 +928,9 @@ fn button_draw(
 }
 
 #[cfg(feature = "android")]
-use std::ffi::c_int;
-
-#[cfg(feature = "android")]
 #[unsafe(no_mangle)]
 #[allow(non_snake_case)]
-pub fn SDL_main() -> c_int {
+pub fn SDL_main() -> std::ffi::c_int {
     std::panic::set_hook(Box::new(|a| {
         if let Some(message) = a.payload_as_str() {
             let _ = sdl3::messagebox::show_simple_message_box(
