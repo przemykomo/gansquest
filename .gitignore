@@ -5,5 +5,7 @@ android/app/build
 android/app/libs
 android/.project
 android/.settings/
+android/build/reports/
+android/build/tmp
 .cxx
 save

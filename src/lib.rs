@@ -325,21 +325,21 @@ pub fn run() -> anyhow::Result<()> {
     //    file.flush().unwrap();
     //
     //    panic!("{:?}", save_directory.parent().unwrap());
-//    unsafe {
-//        // JNIEnv *env = Android_JNI_GetEnv();
-//        let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
-//        let mut env = jni::EnvUnowned::from_raw(ptr as _);
-//        let _ = env.with_env(|env| -> Result<_, jni::errors::Error> {
-//            env.call_static_method(
-//                jni::jni_str!("przemyk/gansquest/MyActivity"),
-//                jni::jni_str!("pickDirectory"),
-//                jni::jni_sig!("()V"),
-//                &[],
-//            ).unwrap();
-//            Ok(())
-//        });
-//    }
-    //panic!("{:?}", save_directory);
+   unsafe {
+       // JNIEnv *env = Android_JNI_GetEnv();
+       let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+       let mut env = jni::EnvUnowned::from_raw(ptr as _);
+       let _ = env.with_env(|env| -> Result<_, jni::errors::Error> {
+           env.call_static_method(
+               jni::jni_str!("przemyk/gansquest/MyActivity"),
+               jni::jni_str!("pickDirectory"),
+               jni::jni_sig!("()V"),
+               &[],
+           ).unwrap();
+           Ok(())
+       });
+   }
+    panic!("{:?}", save_directory);
 
     let mut atlas_txt = app
         .texture_creator

@@ -123,6 +123,7 @@ impl QuestWorld {
     pub fn load(&mut self) -> anyhow::Result<()> {
         let mut file = self.path.clone();
         file.push("world");
+        // IOStream::from_file()
         let Ok(file) = File::open(file) else {
             return Ok(());
         };

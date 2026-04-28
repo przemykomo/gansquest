@@ -43,41 +43,83 @@ android {
 }
 
 // Clanker code, proceed with caution:
-android.applicationVariants.all { variant ->
+androidComponents {
+    onVariants(selector().all()) { variant ->
 
-    def taskName = "extractSoFor${variant.name.capitalize()}"
-    def outputDir = file("$buildDir/generated/jniLibs")
-    // def outputDir = file("$buildDir/generated/jniLibs/${variant.name}")
+        def taskName = "extractSoFor${variant.name.capitalize()}"
+        def outputDir = file("$buildDir/generated/jniLibs")
 
-    tasks.register(taskName, Copy) {
-        from {
-            variant.runtimeConfiguration
-                .filter { it.name.endsWith(".aar") }
-                .collect { zipTree(it) }
-        }
+        def taskProvider = tasks.register(taskName, Copy) {
 
-        include "**/*.so"
-
-        eachFile { fileCopyDetails ->
-            def path = fileCopyDetails.path
-            def abi = ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].find { path.contains(it) }
-            if (abi != null) {
-                fileCopyDetails.path = "${abi}/${fileCopyDetails.name}"
-            } else {
-                fileCopyDetails.exclude()
+            from {
+                variant.runtimeConfiguration
+                    .filter { it.name.endsWith(".aar") }
+                    .collect { zipTree(it) }
             }
+
+            include "**/*.so"
+
+            eachFile { fileCopyDetails ->
+                def path = fileCopyDetails.path
+                def abi = ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"]
+                    .find { path.contains(it) }
+
+                if (abi != null) {
+                    fileCopyDetails.path = "${abi}/${fileCopyDetails.name}"
+                } else {
+                    fileCopyDetails.exclude()
+                }
+            }
+
+            includeEmptyDirs = false
+            duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+            into outputDir
         }
-
-        includeEmptyDirs = false
-        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        into outputDir
-    }
-
-    // Make sure extraction runs before build
-    variant.preBuildProvider.configure {
-        dependsOn(tasks.named(taskName))
+        // variant.sources.jniLibs.addGeneratedSourceDirectory(
+        //     taskProvider,
+        //     Copy::into
+        // )
+        // tasks.named("merge${variant.name.capitalize()}JniLibFolders") {
+        //     dependsOn(taskProvider)
+        // }
     }
 }
+
+
+// android.applicationVariants.all { variant ->
+//
+//     def taskName = "extractSoFor${variant.name.capitalize()}"
+//     def outputDir = file("$buildDir/generated/jniLibs")
+//
+//     tasks.register(taskName, Copy) {
+//         from {
+//             variant.runtimeConfiguration
+//                 .filter { it.name.endsWith(".aar") }
+//                 .collect { zipTree(it) }
+//         }
+//
+//         include "**/*.so"
+//
+//         eachFile { fileCopyDetails ->
+//             def path = fileCopyDetails.path
+//             def abi = ["armeabi-v7a", "arm64-v8a", "x86", "x86_64"].find { path.contains(it) }
+//             if (abi != null) {
+//                 fileCopyDetails.path = "${abi}/${fileCopyDetails.name}"
+//             } else {
+//                 fileCopyDetails.exclude()
+//             }
+//         }
+//
+//         includeEmptyDirs = false
+//         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+//         into outputDir
+//     }
+//
+//     // Make sure extraction runs before build
+//     variant.preBuildProvider.configure {
+//         dependsOn(tasks.named(taskName))
+//     }
+// }
 
 // https://github.com/mozilla/rust-android-gradle
 cargo {
@@ -102,6 +144,7 @@ dependencies {
     implementation files('libs/SDL3-3.4.4.aar')
     implementation files('libs/SDL3_image-3.4.2.aar')
     implementation 'androidx.appcompat:appcompat:1.5.1'
+    implementation "androidx.documentfile:documentfile:1.0.1"
 }
 
 afterEvaluate {
