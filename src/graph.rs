@@ -13,6 +13,7 @@ use gansui::element::{Axis, Element};
 use gansui::indextree::NodeId;
 use gansui::is_in;
 use gansui::sdl3::event::Event;
+use gansui::sdl3::iostream::IOStream;
 use gansui::sdl3::mouse::MouseButton::Left;
 use gansui::sdl3::mouse::SystemCursor;
 use gansui::sdl3::pixels::{Color, FColor};
@@ -21,6 +22,8 @@ use gansui::sdl3::render::FRect;
 use gansui::sdl3::render::{FPoint, Vertex};
 use gansui::sdl3::sys::events::SDL_EventType;
 use gansui::sdl3::{self, timer};
+use jni::objects::{JObjectArray, JString};
+use jni::{JValue, JValueOwned};
 
 use crate::{
     BLUE_GRAY, DARK_GRAY, DARK_PINK, GRAY_PINK, GREEN, LIGHT_BLUE, LIGHT_GRAY, WHITE_OVERLAY,
@@ -121,12 +124,41 @@ impl QuestWorld {
     }
 
     pub fn load(&mut self) -> anyhow::Result<()> {
-        let mut file = self.path.clone();
-        file.push("world");
-        // IOStream::from_file()
-        let Ok(file) = File::open(file) else {
-            return Ok(());
+        let file = unsafe {
+            let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+            let mut env = jni::EnvUnowned::from_raw(ptr as _);
+            let res = env.with_env(|env| -> Result<_, jni::errors::Error> {
+                let parent = JString::new(env, &self.path.to_str().unwrap())?.into();
+                let file_name = JString::new(env, "world")?.into();
+                let res = env.call_static_method(
+                    jni::jni_str!("przemyk/gansquest/MyActivity"),
+                    jni::jni_str!("findFile"),
+                    jni::jni_sig!(sig = (arg1: java.lang.String, arg2: java.lang.String) -> java.lang.String),
+                        & [JValue::Object(
+                            &parent,
+                        ), JValue::Object(
+                            &file_name
+                        )],
+                ).unwrap();
+
+                let JValueOwned::Object(obj) = res else { panic!() };
+                JString::cast_local(env, obj)?.try_to_string(env)
+            });
+
+            let res = res.resolve::<jni::errors::LogErrorAndDefault>();
+            if res.is_empty() {
+                return Ok(());
+            }
+            IOStream::from_file(res, "rb").unwrap()
         };
+        // let Ok(file) = file else { return Ok(()) };
+
+        // let mut file = self.path.clone();
+        // file.push("world");
+        // let Ok(file) = File::open(file) else {
+        //     return Ok(());
+        // };
+
         let mut file = BufReader::new(file);
 
         let mut magic = [0; Self::MAGIC_WORLD.len()];
@@ -146,65 +178,103 @@ impl QuestWorld {
         self.counter = u32::from_le_bytes(counter);
 
         self.nodes.clear();
-        for entry in std::fs::read_dir(&self.path)? {
-            let path = entry?.path();
-            if path.is_file() {
-                let Some(id) = path.file_name() else {
-                    continue;
-                };
-                let Some(id) = id.to_str() else {
-                    continue;
-                };
+        let read_dir = unsafe {
+            let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+            let mut env = jni::EnvUnowned::from_raw(ptr as _);
+            let res = env.with_env(|env| -> Result<_, jni::errors::Error> {
+                let dir = JString::new(env, &self.path.to_str().unwrap())?.into();
+                let res = env
+                    .call_static_method(
+                        jni::jni_str!("przemyk/gansquest/MyActivity"),
+                        jni::jni_str!("readDir"),
+                        jni::jni_sig!(sig = (arg1: java.lang.String) -> java.lang.String[][][][]),
+                        &[JValue::Object(&dir)],
+                    )
+                    .unwrap();
 
-                let Ok(id) = u32::from_str_radix(id, 10) else {
-                    continue;
+                let JValueOwned::Object(obj) = res else {
+                    panic!()
                 };
+                let res: JObjectArray<JObjectArray<JString>> =
+                    env.cast_local::<JObjectArray<JObjectArray<JString>>>(obj)?;
 
-                file = BufReader::new(File::open(path)?);
-                let mut magic = [0; Self::MAGIC_QUEST.len()];
-                file.read_exact(&mut magic)?;
-                if magic != Self::MAGIC_QUEST {
-                    continue;
+                let mut files = Vec::new();
+                for i in 0..res.len(env)? {
+                    let elem = res.get_element(env, i)?;
+                    let dir = elem.get_element(env, 0)?.try_to_string(env)?;
+                    let filename = elem.get_element(env, 1)?.try_to_string(env)?;
+                    files.push((dir, filename));
                 }
 
-                file.read_exact(&mut version)?;
-                if version[0] != Self::VERSION[0] {
-                    continue;
-                }
+                Ok(files)
+            });
 
-                let mut x = [0; 4];
-                file.read_exact(&mut x)?;
-                let mut y = [0; 4];
-                file.read_exact(&mut y)?;
+            res.resolve::<jni::errors::LogErrorAndDefault>()
+        };
 
-                let mut done = [0; 1];
-                file.read_exact(&mut done)?;
+        // for entry in std::fs::read_dir(&self.path)? {
+        //     let path = entry?.path();
+        //     if path.is_file() {
+        //         let Some(id) = path.file_name() else {
+        //             continue;
+        //         };
+        //         let Some(id) = id.to_str() else {
+        //             continue;
+        //         };
+        //
+        for (path, ref id) in read_dir {
+            let Ok(id) = u32::from_str_radix(id, 10) else {
+                continue;
+            };
 
-                let mut length = [0; 4];
-                file.read_exact(&mut length)?;
-                let mut prerequisites: Vec<u32> =
-                    Vec::with_capacity(u32::from_le_bytes(length) as usize);
-                let mut p = [0; 4];
-                for _ in 0..u32::from_le_bytes(length) {
-                    file.read_exact(&mut p)?;
-                    prerequisites.push(u32::from_le_bytes(p));
-                }
+            file = BufReader::new(IOStream::from_file(path, "rb")?);
 
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
+            //         file = BufReader::new(File::open(path)?);
 
-                dbg!(&content);
-                self.nodes.insert(
-                    id,
-                    QuestNode::new(
-                        f32::from_le_bytes(x),
-                        f32::from_le_bytes(y),
-                        prerequisites,
-                        done[0] != 0,
-                        content,
-                    ),
-                );
+            let mut magic = [0; Self::MAGIC_QUEST.len()];
+            file.read_exact(&mut magic)?;
+            if magic != Self::MAGIC_QUEST {
+                continue;
             }
+
+            file.read_exact(&mut version)?;
+            if version[0] != Self::VERSION[0] {
+                continue;
+            }
+
+            let mut x = [0; 4];
+            file.read_exact(&mut x)?;
+            let mut y = [0; 4];
+            file.read_exact(&mut y)?;
+
+            let mut done = [0; 1];
+            file.read_exact(&mut done)?;
+
+            let mut length = [0; 4];
+            file.read_exact(&mut length)?;
+            let mut prerequisites: Vec<u32> =
+                Vec::with_capacity(u32::from_le_bytes(length) as usize);
+            let mut p = [0; 4];
+            for _ in 0..u32::from_le_bytes(length) {
+                file.read_exact(&mut p)?;
+                prerequisites.push(u32::from_le_bytes(p));
+            }
+
+            let mut content = String::new();
+            file.read_to_string(&mut content)?;
+
+            dbg!(&content);
+            self.nodes.insert(
+                id,
+                QuestNode::new(
+                    f32::from_le_bytes(x),
+                    f32::from_le_bytes(y),
+                    prerequisites,
+                    done[0] != 0,
+                    content,
+                ),
+            );
+            // }
         }
 
         Ok(())
@@ -227,7 +297,7 @@ pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
     // ));
 
     world.load().unwrap();
-    dbg!(world.counter);
+    // panic!("{:?}", world.path);
     // nodes.insert(
     //     1,
     //     QuestNode {

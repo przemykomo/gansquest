@@ -1,4 +1,6 @@
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,6 +34,7 @@ use gansui::sdl3;
 use gansui::sdl3::dialog::DialogCallback;
 use gansui::sdl3::dialog::DialogError;
 use gansui::sdl3::dialog::DialogFileFilter;
+use gansui::sdl3::filesystem::EnumerationResult;
 use gansui::sdl3::image::LoadTexture;
 use gansui::sdl3::iostream::IOStream;
 use gansui::sdl3::messagebox::ButtonData;
@@ -49,6 +52,14 @@ use gansui::text::rich_text_element;
 pub mod graph;
 use gansui::text::text_edit_element;
 use graph::generate_graph;
+use jni::EnvUnowned;
+use jni::JValue;
+use jni::JValueOwned;
+use jni::errors;
+use jni::objects;
+use jni::objects::JClass;
+use jni::objects::JObjectArray;
+use jni::objects::JString;
 
 use crate::graph::QuestNode;
 use crate::graph::QuestWorld;
@@ -257,28 +268,32 @@ fn done_editing_button(
         button_state,
         if accept { ACCEPT_TXT } else { CANCEL_TXT },
     ));
-    // .set_draw({
-    //     let atlas_txt = atlas_txt.clone();
-    //     move |app, element| {
-    //         let color = match *accept_button_state.borrow() {
-    //             ButtonState::None => none,
-    //             ButtonState::Hover => hover,
-    //             ButtonState::Pressed => pressed,
-    //         };
-    //
-    //         let element = app.tree[element].get();
-    //         let mut atlas_txt = atlas_txt.borrow_mut();
-    //         atlas_txt.set_color_mod(color.r, color.g, color.b);
-    //         app.canvas
-    //             .copy(
-    //                 &atlas_txt,
-    //                 Some(if accept { ACCEPT_TXT } else { CANCEL_TXT }),
-    //                 Some(element.aabb),
-    //             )
-    //             .unwrap();
-    //     }
-    // }),
     tree.new_node(element)
+}
+
+static PICK_DIR_RES: OnceLock<String> = OnceLock::new();
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_przemyk_gansquest_MyActivity_onNativePickDirectory<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    // input: JObjectArray<'caller, JString>,
+    input: JString<'caller>,
+) {
+    let outcome = unowned_env.with_env(|env| -> Result<_, jni::errors::Error> {
+        let s = input.try_to_string(env)?;
+        PICK_DIR_RES.get_or_init(|| s);
+        // let mut files = Vec::new();
+        // for i in 0..input.len(env)? {
+        //     let s = input.get_element(env, i)?;
+        //     let s = s.try_to_string(env)?;
+        //     files.push(s);
+        // }
+        // PICK_DIR_RES.get_or_init(|| files);
+        Ok(())
+    });
+
+    outcome.resolve::<jni::errors::ThrowRuntimeExAndDefault>()
 }
 
 pub fn run() -> anyhow::Result<()> {
@@ -304,42 +319,32 @@ pub fn run() -> anyhow::Result<()> {
 
     let app = App::new(VERY_DARK_GRAY)?;
 
-    //    static SAVE_DIR: OnceLock<Result<Vec<PathBuf>, DialogError>> = OnceLock::new();
-    //    sdl3::dialog::show_save_file_dialog(
-    //        &[],
-    //        None::<&Path>,
-    //        //false,
-    //        app.canvas.window(),
-    //        Box::new(
-    //            |result: Result<Vec<PathBuf>, DialogError>, filter: Option<DialogFileFilter<'_>>| {
-    //                SAVE_DIR.get_or_init(|| result);
-    //            },
-    //        ),
-    //    )
-    //    .unwrap();
-    //
-    //    let res = &SAVE_DIR.wait().as_ref().unwrap();
-    //    save_directory = res[0].clone();
-    //    let mut file = IOStream::from_file(&save_directory, "w").unwrap();
-    //    write!(file, "aboba aboba!").unwrap();
-    //    file.flush().unwrap();
-    //
-    //    panic!("{:?}", save_directory.parent().unwrap());
-   unsafe {
-       // JNIEnv *env = Android_JNI_GetEnv();
-       let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
-       let mut env = jni::EnvUnowned::from_raw(ptr as _);
-       let _ = env.with_env(|env| -> Result<_, jni::errors::Error> {
-           env.call_static_method(
-               jni::jni_str!("przemyk/gansquest/MyActivity"),
-               jni::jni_str!("pickDirectory"),
-               jni::jni_sig!("()V"),
-               &[],
-           ).unwrap();
-           Ok(())
-       });
-   }
-    panic!("{:?}", save_directory);
+    let mut cfg = sdl3::filesystem::get_pref_path("przemyk", "gansquest").unwrap();
+    cfg.push("myasdkh");
+    let mut save_directory = std::fs::read_to_string(&cfg).unwrap_or_else(|_| {
+        unsafe {
+            let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+            let mut env = jni::EnvUnowned::from_raw(ptr as _);
+            env.with_env(|env| -> Result<_, jni::errors::Error> {
+                env.call_static_method(
+                    jni::jni_str!("przemyk/gansquest/MyActivity"),
+                    jni::jni_str!("pickDirectory"),
+                    jni::jni_sig!("()V"),
+                    &[],
+                )
+                .unwrap();
+                Ok(())
+            })
+            .resolve::<jni::errors::LogErrorAndDefault>();
+        }
+
+        let dir = PICK_DIR_RES.wait().clone();
+        // std::fs::create_dir_all(&cfg).unwrap();
+        std::fs::write(&cfg, &dir).unwrap();
+        dir
+    });
+
+    let mut save_directory = std::path::PathBuf::from(save_directory);
 
     let mut atlas_txt = app
         .texture_creator
@@ -350,7 +355,34 @@ pub fn run() -> anyhow::Result<()> {
 
     let selected: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
 
-    save_directory.push("myworld/");
+    // save_directory.push("myworld/");
+
+    unsafe {
+        let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
+        let mut env = jni::EnvUnowned::from_raw(ptr as _);
+        let res = env.with_env(|env| -> Result<_, jni::errors::Error> {
+            let parent = JString::new(env, &save_directory.to_str().unwrap())?.into();
+            let dir = JString::new(env, "myworld")?.into();
+            let res = env.call_static_method(
+                jni::jni_str!("przemyk/gansquest/MyActivity"),
+                jni::jni_str!("createDirectory"),
+                jni::jni_sig!(sig = (arg1: java.lang.String, arg2: java.lang.String) -> java.lang.String),
+                    & [JValue::Object(
+                        &parent,
+                    ), JValue::Object(
+                        &dir
+                    )],
+            ).unwrap();
+
+            let JValueOwned::Object(obj) = res else { panic!() };
+            JString::cast_local(env, obj)?.try_to_string(env)
+        });
+
+        let res = res.resolve::<jni::errors::LogErrorAndDefault>();
+        save_directory = res.into();
+    }
+
+    // sdl3::filesystem::create_directory(&save_directory).unwrap();
     let world = load_graph(save_directory);
     let mut tree = Arena::new();
 

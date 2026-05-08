@@ -9,3 +9,6 @@ android/build/reports/
 android/build/tmp
 .cxx
 save
+*.apk
+*.idsig
+*.jks

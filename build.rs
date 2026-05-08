@@ -8,5 +8,8 @@ fn main() {
         _ => panic!("Unsupported target: {}", target),
     };
 
+    // println!(
+    //     "cargo:rustc-link-search=native=./android/app/build/intermediates/merged_native_libs/debug/out/lib/{abi}"
+    // );
     println!("cargo:rustc-link-search=native=./android/app/build/generated/jniLibs/{abi}");
 }
