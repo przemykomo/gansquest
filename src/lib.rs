@@ -65,6 +65,8 @@ use crate::graph::QuestNode;
 use crate::graph::QuestWorld;
 use crate::graph::load_graph;
 
+pub mod android;
+
 const ACCEPT_TXT: FRect = FRect {
     x: 64.0,
     y: 128.0,
@@ -356,33 +358,18 @@ pub fn run() -> anyhow::Result<()> {
     let selected: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
 
     // save_directory.push("myworld/");
+    let parent = save_directory.to_str().unwrap();
+    let subdir = "myworld";
 
-    unsafe {
-        let ptr: *mut ::core::ffi::c_void = sdl3::sys::system::SDL_GetAndroidJNIEnv();
-        let mut env = jni::EnvUnowned::from_raw(ptr as _);
-        let res = env.with_env(|env| -> Result<_, jni::errors::Error> {
-            let parent = JString::new(env, &save_directory.to_str().unwrap())?.into();
-            let dir = JString::new(env, "myworld")?.into();
-            let res = env.call_static_method(
-                jni::jni_str!("przemyk/gansquest/MyActivity"),
-                jni::jni_str!("createDirectory"),
-                jni::jni_sig!(sig = (arg1: java.lang.String, arg2: java.lang.String) -> java.lang.String),
-                    & [JValue::Object(
-                        &parent,
-                    ), JValue::Object(
-                        &dir
-                    )],
-            ).unwrap();
-
-            let JValueOwned::Object(obj) = res else { panic!() };
-            JString::cast_local(env, obj)?.try_to_string(env)
-        });
-
-        let res = res.resolve::<jni::errors::LogErrorAndDefault>();
-        save_directory = res.into();
-    }
+    save_directory = android::create_subdirectory(parent, subdir).into();
 
     // sdl3::filesystem::create_directory(&save_directory).unwrap();
+    // sdl3::messagebox::show_simple_message_box(
+    //     sdl3::messagebox::MessageBoxFlag::INFORMATION,
+    //     "info!",
+    //     "aboba",
+    //     None,
+    // );
     let world = load_graph(save_directory);
     let mut tree = Arena::new();
 

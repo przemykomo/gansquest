@@ -27,7 +27,7 @@ use jni::{JValue, JValueOwned};
 
 use crate::{
     BLUE_GRAY, DARK_GRAY, DARK_PINK, GRAY_PINK, GREEN, LIGHT_BLUE, LIGHT_GRAY, WHITE_OVERLAY,
-    YELLOW,
+    YELLOW, android,
 };
 const NODE_LENGTH: f32 = 20.0;
 
@@ -97,8 +97,9 @@ impl QuestWorld {
 
     pub fn save(&self) -> std::io::Result<()> {
         let mut file = self.path.clone();
-        file.push("world");
-        std::fs::create_dir_all(&self.path).unwrap();
+        file = android::create_subdirectory(file.to_str().unwrap(), "world").into();
+        // file.push("world");
+        // std::fs::create_dir_all(&self.path).unwrap();
         let mut file = File::create(file).unwrap();
         file.write_all(Self::MAGIC_WORLD)?;
         file.write_all(Self::VERSION)?;
@@ -297,6 +298,7 @@ pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
     // ));
 
     world.load().unwrap();
+
     // panic!("{:?}", world.path);
     // nodes.insert(
     //     1,
