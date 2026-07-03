@@ -9,6 +9,7 @@ gansui = {
     path = "../gansui",
     # features = ["debug_ui"]
 }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [lib]
 crate-type = ["lib", "dylib"]

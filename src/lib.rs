@@ -648,8 +648,8 @@ pub fn run() -> anyhow::Result<()> {
                     0.0, //TODO
                     0.0,
                     vec![],
+                    graph::QuestState::Available,
                     false,
-                    // graph::QuestState::Available,
                     "New Quest".to_owned(),
                 ));
             }

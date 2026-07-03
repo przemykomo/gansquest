@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use anyhow::anyhow;
@@ -10,7 +10,7 @@ use gansui::App;
 use gansui::draw::draw_tiled;
 use gansui::element::Length;
 use gansui::element::{Axis, Element};
-use gansui::indextree::NodeId;
+use gansui::indextree::{Node, NodeId};
 use gansui::is_in;
 use gansui::sdl3::event::Event;
 use gansui::sdl3::mouse::MouseButton::Left;
@@ -20,7 +20,10 @@ use gansui::sdl3::rect::Rect;
 use gansui::sdl3::render::FRect;
 use gansui::sdl3::render::{FPoint, Vertex};
 use gansui::sdl3::sys::events::SDL_EventType;
+use gansui::sdl3::video::ProgressState;
 use gansui::sdl3::{self, timer};
+use rusqlite::fallible_streaming_iterator::FallibleStreamingIterator;
+use rusqlite::{Connection, params};
 
 use crate::{
     BLUE_GRAY, DARK_GRAY, DARK_PINK, GRAY_PINK, GREEN, LIGHT_BLUE, LIGHT_GRAY, WHITE_OVERLAY,
@@ -45,7 +48,7 @@ impl QuestNode {
         x: f32,
         y: f32,
         prerequisites: Vec<u32>,
-        // state: QuestState,
+        state: QuestState,
         done: bool,
         content: String,
     ) -> QuestNode {
@@ -54,11 +57,7 @@ impl QuestNode {
             y,
             prerequisites,
             done,
-            state: if done {
-                QuestState::Done
-            } else {
-                QuestState::Unavailable
-            },
+            state,
             title_split: content.find('\n').unwrap_or(content.len()),
             content,
         }
@@ -73,13 +72,13 @@ impl QuestNode {
 pub enum QuestState {
     Unavailable,
     Available,
-    Done,
 }
 
 pub struct QuestWorld {
     pub nodes: HashMap<u32, QuestNode>,
     counter: u32,
     path: PathBuf,
+    conn: Connection,
 }
 
 impl QuestWorld {
@@ -92,122 +91,215 @@ impl QuestWorld {
         self.nodes.insert(self.counter, node);
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        let mut file = self.path.clone();
-        file.push("world");
-        std::fs::create_dir_all(&self.path).unwrap();
-        let mut file = File::create(file).unwrap();
-        file.write_all(Self::MAGIC_WORLD)?;
-        file.write_all(Self::VERSION)?;
-        file.write_all(&self.counter.to_le_bytes())?;
+    pub fn save(&self) -> anyhow::Result<()> {
+        self.conn.execute_batch(
+            "BEGIN TRANSACTION;
+            DELETE FROM TASK_DEP;
+            DELETE FROM TASKS;
+            DELETE FROM WORLDS;
+            COMMIT;
+            ",
+        )?;
+        self.conn.execute(
+            "INSERT INTO WORLDS (name, order_num) VALUES (?1, 0)",
+            ["world"],
+        )?;
+        let world_id = self.conn.last_insert_rowid();
 
-        for (key, node) in &self.nodes {
-            let mut file = self.path.clone();
-            file.push(format!("{key}"));
-            let mut file = File::create(file).unwrap();
-            file.write_all(Self::MAGIC_QUEST)?;
-            file.write_all(Self::VERSION)?;
-            file.write_all(&node.x.to_le_bytes())?;
-            file.write_all(&node.y.to_le_bytes())?;
-            file.write_all(&[node.done as u8])?;
-            file.write_all(&(node.prerequisites.len() as u32).to_le_bytes())?;
-            for pre in &node.prerequisites {
-                file.write_all(&pre.to_le_bytes())?;
-            }
-            file.write_all(node.content.as_bytes())?;
+        for (task_id, node) in &self.nodes {
+            let status = node.done as u8;
+            self.conn.execute(
+                "INSERT INTO TASKS(ID, content, world_ID, x, y, status) VALUES(?, ?, ?, ?, ?, ?)",
+                params![task_id, node.content, world_id, node.x, node.y, status],
+            )?;
         }
+        for (task_id, node) in &self.nodes {
+            for pre in &node.prerequisites {
+                self.conn.execute(
+                    "INSERT INTO TASK_DEP(dependency_ID, dependant_ID) VALUES(?, ?)",
+                    params![pre, task_id],
+                )?;
+            }
+        }
+
+        // let mut file = self.path.clone();
+        // file.push("world");
+        // std::fs::create_dir_all(&self.path).unwrap();
+        // let mut file = File::create(file).unwrap();
+        // file.write_all(Self::MAGIC_WORLD)?;
+        // file.write_all(Self::VERSION)?;
+        // file.write_all(&self.counter.to_le_bytes())?;
+        //
+        // for (key, node) in &self.nodes {
+        //     let mut file = self.path.clone();
+        //     file.push(format!("{key}"));
+        //     let mut file = File::create(file).unwrap();
+        //     file.write_all(Self::MAGIC_QUEST)?;
+        //     file.write_all(Self::VERSION)?;
+        //     file.write_all(&node.x.to_le_bytes())?;
+        //     file.write_all(&node.y.to_le_bytes())?;
+        //     file.write_all(&[node.done as u8])?;
+        //     file.write_all(&(node.prerequisites.len() as u32).to_le_bytes())?;
+        //     for pre in &node.prerequisites {
+        //         file.write_all(&pre.to_le_bytes())?;
+        //     }
+        //     file.write_all(node.content.as_bytes())?;
+        // }
 
         Ok(())
     }
 
     pub fn load(&mut self) -> anyhow::Result<()> {
-        let mut file = self.path.clone();
-        file.push("world");
-        let Ok(file) = File::open(file) else {
-            return Ok(());
-        };
-        let mut file = BufReader::new(file);
+        let (world_id, world_name): (i64, String) =
+            self.conn
+                .query_one("SELECT ID, name FROM WORLDS ORDER BY ID", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })?;
 
-        let mut magic = [0; Self::MAGIC_WORLD.len()];
-        file.read_exact(&mut magic)?;
-        if magic != Self::MAGIC_WORLD {
-            return Err(anyhow!("Magic bytes don't match for the world file."));
-        }
+        println!("World {world_name} with id {world_id}");
 
-        let mut version = [0; 1];
-        file.read_exact(&mut version)?;
-        if version[0] != Self::VERSION[0] {
-            return Err(anyhow!("Version doesn't match for the world file."));
-        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT TASKS.ID, content, x, y, status, ifnull(unfinished_count, 0) FROM TASKS LEFT JOIN (SELECT dependant_ID as id, COUNT(*) as unfinished_count FROM TASK_DEP JOIN TASKS ON dependency_ID = TASKS.ID WHERE status != 1 GROUP BY dependant_ID) AS unfinished ON unfinished.id = TASKS.id WHERE world_id = ?")?;
+        let task_iter = stmt.query_map([world_id], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                QuestNode::new(
+                    row.get(2)?,
+                    row.get(3)?,
+                    vec![],
+                    if row.get::<_, i32>(5)? == 0 {
+                        QuestState::Available
+                    } else {
+                        QuestState::Unavailable
+                    },
+                    row.get::<_, i32>(4)? != 0,
+                    row.get(1)?,
+                ),
+            ))
+        })?;
 
-        let mut counter = [0; 4];
-        file.read_exact(&mut counter)?;
-        self.counter = u32::from_le_bytes(counter);
-
-        self.nodes.clear();
-        for entry in std::fs::read_dir(&self.path)? {
-            let path = entry?.path();
-            if path.is_file() {
-                let Some(id) = path.file_name() else {
-                    continue;
-                };
-                let Some(id) = id.to_str() else {
-                    continue;
-                };
-
-                let Ok(id) = u32::from_str_radix(id, 10) else {
-                    continue;
-                };
-
-                file = BufReader::new(File::open(path)?);
-                let mut magic = [0; Self::MAGIC_QUEST.len()];
-                file.read_exact(&mut magic)?;
-                if magic != Self::MAGIC_QUEST {
-                    continue;
-                }
-
-                file.read_exact(&mut version)?;
-                if version[0] != Self::VERSION[0] {
-                    continue;
-                }
-
-                let mut x = [0; 4];
-                file.read_exact(&mut x)?;
-                let mut y = [0; 4];
-                file.read_exact(&mut y)?;
-
-                let mut done = [0; 1];
-                file.read_exact(&mut done)?;
-
-                let mut length = [0; 4];
-                file.read_exact(&mut length)?;
-                let mut prerequisites: Vec<u32> =
-                    Vec::with_capacity(u32::from_le_bytes(length) as usize);
-                let mut p = [0; 4];
-                for _ in 0..u32::from_le_bytes(length) {
-                    file.read_exact(&mut p)?;
-                    prerequisites.push(u32::from_le_bytes(p));
-                }
-
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
-
-                dbg!(&content);
-                self.nodes.insert(
-                    id,
-                    QuestNode::new(
-                        f32::from_le_bytes(x),
-                        f32::from_le_bytes(y),
-                        prerequisites,
-                        done[0] != 0,
-                        content,
-                    ),
-                );
+        let mut stmt = self
+            .conn
+            .prepare("SELECT dependency_ID FROM TASK_DEP WHERE dependant_ID = ?")?;
+        for row in task_iter {
+            let (id, mut node) = row?;
+            for row in stmt.query_map([id], |row| row.get::<_, u32>(0))? {
+                node.prerequisites.push(row?);
             }
+            self.nodes.insert(id, node);
         }
+
+        // let mut file = self.path.clone();
+        // file.push("world");
+        // let Ok(file) = File::open(file) else {
+        //     return Ok(());
+        // };
+        // let mut file = BufReader::new(file);
+        //
+        // let mut magic = [0; Self::MAGIC_WORLD.len()];
+        // file.read_exact(&mut magic)?;
+        // if magic != Self::MAGIC_WORLD {
+        //     return Err(anyhow!("Magic bytes don't match for the world file."));
+        // }
+        //
+        // let mut version = [0; 1];
+        // file.read_exact(&mut version)?;
+        // if version[0] != Self::VERSION[0] {
+        //     return Err(anyhow!("Version doesn't match for the world file."));
+        // }
+        //
+        // let mut counter = [0; 4];
+        // file.read_exact(&mut counter)?;
+        // self.counter = u32::from_le_bytes(counter);
+        //
+        // self.nodes.clear();
+        // for entry in std::fs::read_dir(&self.path)? {
+        //     let path = entry?.path();
+        //     if path.is_file() {
+        //         let Some(id) = path.file_name() else {
+        //             continue;
+        //         };
+        //         let Some(id) = id.to_str() else {
+        //             continue;
+        //         };
+        //
+        //         let Ok(id) = u32::from_str_radix(id, 10) else {
+        //             continue;
+        //         };
+        //
+        //         file = BufReader::new(File::open(path)?);
+        //         let mut magic = [0; Self::MAGIC_QUEST.len()];
+        //         file.read_exact(&mut magic)?;
+        //         if magic != Self::MAGIC_QUEST {
+        //             continue;
+        //         }
+        //
+        //         file.read_exact(&mut version)?;
+        //         if version[0] != Self::VERSION[0] {
+        //             continue;
+        //         }
+        //
+        //         let mut x = [0; 4];
+        //         file.read_exact(&mut x)?;
+        //         let mut y = [0; 4];
+        //         file.read_exact(&mut y)?;
+        //
+        //         let mut done = [0; 1];
+        //         file.read_exact(&mut done)?;
+        //
+        //         let mut length = [0; 4];
+        //         file.read_exact(&mut length)?;
+        //         let mut prerequisites: Vec<u32> =
+        //             Vec::with_capacity(u32::from_le_bytes(length) as usize);
+        //         let mut p = [0; 4];
+        //         for _ in 0..u32::from_le_bytes(length) {
+        //             file.read_exact(&mut p)?;
+        //             prerequisites.push(u32::from_le_bytes(p));
+        //         }
+        //
+        //         let mut content = String::new();
+        //         file.read_to_string(&mut content)?;
+        //
+        //         dbg!(&content);
+        //         self.nodes.insert(
+        //             id,
+        //             QuestNode::new(
+        //                 f32::from_le_bytes(x),
+        //                 f32::from_le_bytes(y),
+        //                 prerequisites,
+        //                 QuestState::Available,
+        //                 done[0] != 0,
+        //                 content,
+        //             ),
+        //         );
+        //     }
+        // }
 
         Ok(())
     }
+}
+
+const DB_VERSION: i32 = 0;
+
+pub fn open_db() -> Connection {
+    let path = Path::new("./gansquest.db");
+    let exists = path.exists();
+    let conn = Connection::open(path).unwrap();
+    if !exists {
+        conn.execute_batch(include_str!("../create.sql")).unwrap();
+        conn.execute("INSERT INTO VERSION VALUES (?1)", [DB_VERSION])
+            .unwrap();
+    } else {
+        let db_version: i32 = conn
+            .query_one("SELECT version FROM VERSION", [], |row| row.get(0))
+            .unwrap();
+        if db_version != DB_VERSION {
+            panic!("DB VERSION");
+        }
+    }
+
+    conn
 }
 
 pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
@@ -215,6 +307,7 @@ pub fn load_graph<'a>(path: PathBuf) -> Rc<RefCell<QuestWorld>> {
         nodes: HashMap::new(),
         counter: 0,
         path,
+        conn: open_db(),
     };
 
     // world.add(QuestNode::new(
@@ -418,6 +511,8 @@ pub fn generate_graph<'a>(
                         direction: _,
                         mouse_x,
                         mouse_y,
+                        integer_x: _,
+                        integer_y: _,
                     } => {
                         if is_in(*mouse_x, *mouse_y, &element.aabb) {
                             let factor = 1.2f32.powf(1.0 / scrolled);
@@ -490,9 +585,9 @@ pub fn generate_graph<'a>(
                 } else {
                     (
                         match node.state {
+                            _ if node.done => GREEN,
                             QuestState::Unavailable => DARK_PINK,
                             QuestState::Available => GRAY_PINK,
-                            QuestState::Done => GREEN,
                         },
                         false,
                     )
@@ -613,9 +708,9 @@ pub fn generate_graph<'a>(
 
             for node in world.nodes.values() {
                 let (fill, border) = match node.state {
+                    _ if node.done => (LIGHT_GRAY, GREEN),
                     QuestState::Unavailable => (DARK_GRAY, LIGHT_GRAY),
                     QuestState::Available => (LIGHT_GRAY, Color::WHITE),
-                    QuestState::Done => (LIGHT_GRAY, GREEN),
                 };
 
                 let node_aabb = FRect::new(x + node.x * *zoom, y + node.y * *zoom, length, length);
