@@ -295,7 +295,7 @@ pub fn run() -> anyhow::Result<()> {
 
     let selected: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
 
-    save_directory.push("myworld/");
+    save_directory.push("testworld.gq");
     let world = load_graph(save_directory);
     let mut tree = Arena::new();
 

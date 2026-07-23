@@ -13,6 +13,7 @@ use gansui::element::{Axis, Element};
 use gansui::indextree::NodeId;
 use gansui::is_in;
 use gansui::sdl3::event::Event;
+use gansui::sdl3::iostream::IOStream;
 use gansui::sdl3::mouse::MouseButton::Left;
 use gansui::sdl3::mouse::SystemCursor;
 use gansui::sdl3::pixels::{Color, FColor};
@@ -85,28 +86,31 @@ pub struct QuestWorld {
 impl QuestWorld {
     const VERSION: &[u8] = &[0];
     const MAGIC_WORLD: &[u8] = b"GANSQUESTW";
-    const MAGIC_QUEST: &[u8] = b"GANSQUESTQ";
+    // const MAGIC_QUEST: &[u8] = b"GANSQUESTQ";
 
     pub fn add(&mut self, node: QuestNode) {
         self.counter += 1;
         self.nodes.insert(self.counter, node);
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        let mut file = self.path.clone();
-        file.push("world");
-        std::fs::create_dir_all(&self.path).unwrap();
-        let mut file = File::create(file).unwrap();
+    pub fn save(&self) -> anyhow::Result<()> {
+        let mut file = IOStream::from_file(&self.path, "wb")?;
+        // let mut file = self.path.clone();
+        // file.push("world");
+        // std::fs::create_dir_all(&self.path).unwrap();
+        // let mut file = File::create(file).unwrap();
         file.write_all(Self::MAGIC_WORLD)?;
         file.write_all(Self::VERSION)?;
         file.write_all(&self.counter.to_le_bytes())?;
+        // file.write_all(&(self.nodes.len() as u32).to_le_bytes())?;
 
         for (key, node) in &self.nodes {
-            let mut file = self.path.clone();
-            file.push(format!("{key}"));
-            let mut file = File::create(file).unwrap();
-            file.write_all(Self::MAGIC_QUEST)?;
-            file.write_all(Self::VERSION)?;
+            // let mut file = self.path.clone();
+            // file.push(format!("{key}"));
+            // let mut file = File::create(file).unwrap();
+            // file.write_all(Self::MAGIC_QUEST)?;
+            // file.write_all(Self::VERSION)?;
+            file.write_all(&key.to_le_bytes())?;
             file.write_all(&node.x.to_le_bytes())?;
             file.write_all(&node.y.to_le_bytes())?;
             file.write_all(&[node.done as u8])?;
@@ -114,6 +118,7 @@ impl QuestWorld {
             for pre in &node.prerequisites {
                 file.write_all(&pre.to_le_bytes())?;
             }
+            file.write_all(&(node.content.len() as u32).to_le_bytes())?;
             file.write_all(node.content.as_bytes())?;
         }
 
@@ -121,11 +126,14 @@ impl QuestWorld {
     }
 
     pub fn load(&mut self) -> anyhow::Result<()> {
-        let mut file = self.path.clone();
-        file.push("world");
-        let Ok(file) = File::open(file) else {
+        // let mut file = self.path.clone();
+        // file.push("world");
+        let Ok(file) = IOStream::from_file(&self.path, "rb") else {
             return Ok(());
         };
+        // let Ok(file) = File::open(file) else {
+        //     return Ok(());
+        // };
         let mut file = BufReader::new(file);
 
         let mut magic = [0; Self::MAGIC_WORLD.len()];
@@ -145,65 +153,75 @@ impl QuestWorld {
         self.counter = u32::from_le_bytes(counter);
 
         self.nodes.clear();
-        for entry in std::fs::read_dir(&self.path)? {
-            let path = entry?.path();
-            if path.is_file() {
-                let Some(id) = path.file_name() else {
-                    continue;
-                };
-                let Some(id) = id.to_str() else {
-                    continue;
-                };
+        // for entry in std::fs::read_dir(&self.path)? {
+        //     let path = entry?.path();
+        //     if path.is_file() {
+        let mut id = [0; 4];
+        while let Ok(()) = file.read_exact(&mut id) {
+            let id = u32::from_le_bytes(id);
+            // let Some(id) = path.file_name() else {
+            //     continue;
+            // };
+            // let Some(id) = id.to_str() else {
+            //     continue;
+            // };
+            //
+            // let Ok(id) = u32::from_str_radix(id, 10) else {
+            //     continue;
+            // };
 
-                let Ok(id) = u32::from_str_radix(id, 10) else {
-                    continue;
-                };
+            // file = BufReader::new(File::open(path)?);
+            // let mut magic = [0; Self::MAGIC_QUEST.len()];
+            // file.read_exact(&mut magic)?;
+            // if magic != Self::MAGIC_QUEST {
+            //     continue;
+            // }
 
-                file = BufReader::new(File::open(path)?);
-                let mut magic = [0; Self::MAGIC_QUEST.len()];
-                file.read_exact(&mut magic)?;
-                if magic != Self::MAGIC_QUEST {
-                    continue;
-                }
+            // file.read_exact(&mut version)?;
+            // if version[0] != Self::VERSION[0] {
+            //     continue;
+            // }
 
-                file.read_exact(&mut version)?;
-                if version[0] != Self::VERSION[0] {
-                    continue;
-                }
+            let mut x = [0; 4];
+            file.read_exact(&mut x)?;
+            let mut y = [0; 4];
+            file.read_exact(&mut y)?;
 
-                let mut x = [0; 4];
-                file.read_exact(&mut x)?;
-                let mut y = [0; 4];
-                file.read_exact(&mut y)?;
+            let mut done = [0; 1];
+            file.read_exact(&mut done)?;
 
-                let mut done = [0; 1];
-                file.read_exact(&mut done)?;
-
-                let mut length = [0; 4];
-                file.read_exact(&mut length)?;
-                let mut prerequisites: Vec<u32> =
-                    Vec::with_capacity(u32::from_le_bytes(length) as usize);
-                let mut p = [0; 4];
-                for _ in 0..u32::from_le_bytes(length) {
-                    file.read_exact(&mut p)?;
-                    prerequisites.push(u32::from_le_bytes(p));
-                }
-
-                let mut content = String::new();
-                file.read_to_string(&mut content)?;
-
-                dbg!(&content);
-                self.nodes.insert(
-                    id,
-                    QuestNode::new(
-                        f32::from_le_bytes(x),
-                        f32::from_le_bytes(y),
-                        prerequisites,
-                        done[0] != 0,
-                        content,
-                    ),
-                );
+            let mut length = [0; 4];
+            file.read_exact(&mut length)?;
+            let mut prerequisites: Vec<u32> =
+                Vec::with_capacity(u32::from_le_bytes(length) as usize);
+            let mut p = [0; 4];
+            for _ in 0..u32::from_le_bytes(length) {
+                file.read_exact(&mut p)?;
+                prerequisites.push(u32::from_le_bytes(p));
             }
+
+            file.read_exact(&mut length)?;
+            let length = u32::from_le_bytes(length) as usize;
+            let mut str_buf = Vec::with_capacity(length);
+            unsafe {
+                str_buf.set_len(length);
+            }
+            file.read_exact(&mut str_buf)?;
+            let content = String::from_utf8(str_buf)?;
+            // file.read_to_string(&mut content)?;
+
+            // dbg!(&content);
+            self.nodes.insert(
+                id,
+                QuestNode::new(
+                    f32::from_le_bytes(x),
+                    f32::from_le_bytes(y),
+                    prerequisites,
+                    done[0] != 0,
+                    content,
+                ),
+            );
+            // }
         }
 
         Ok(())
@@ -418,6 +436,8 @@ pub fn generate_graph<'a>(
                         direction: _,
                         mouse_x,
                         mouse_y,
+                        integer_x: _,
+                        integer_y: _,
                     } => {
                         if is_in(*mouse_x, *mouse_y, &element.aabb) {
                             let factor = 1.2f32.powf(1.0 / scrolled);
